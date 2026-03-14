@@ -145,7 +145,7 @@
   .budget-bar-fill{height:100%;border-radius:6px;transition:width .4s ease,background .3s}
   .budget-label{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:5px}
 
-  .pitch{background:linear-gradient(180deg,#0a3d1f 0%,#0d5228 25%,#0a3d1f 50%,#0d5228 75%,#0a3d1f 100%);border-radius:14px;padding:14px 10px 10px;margin-bottom:16px;border:1px solid rgba(255,255,255,.08);position:relative;overflow:hidden}
+  .pitch{background:linear-gradient(180deg,#0a3d1f 0%,#0d5228 25%,#0a3d1f 50%,#0d5228 75%,#0a3d1f 100%);border-radius:14px;padding:14px 10px 24px;margin-bottom:16px;border:1px solid rgba(255,255,255,.08);position:relative;overflow:hidden}
   .pitch::before{content:'';position:absolute;inset:0;background:repeating-linear-gradient(180deg,transparent 0px,transparent 59px,rgba(255,255,255,.04) 59px,rgba(255,255,255,.04) 60px);pointer-events:none}
   .pitch-row{display:flex;justify-content:center;gap:8px;margin-bottom:10px}
   .pitch-slot{display:flex;flex-direction:column;align-items:center;gap:4px;cursor:pointer;min-width:62px;max-width:72px}
@@ -162,7 +162,7 @@
   .pitch-section-label{font-size:9px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:rgba(255,255,255,.35);text-align:center;margin-bottom:6px}
   .bench-divider{border:none;border-top:1px dashed rgba(255,255,255,.15);margin:8px 0 10px}
 
-  .draft-actions{display:flex;gap:8px;margin-bottom:16px}
+  .draft-actions{display:flex;gap:8px;margin-bottom:14px;margin-top:0}
   .draft-btn{flex:1;padding:10px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--muted);font-size:12px;font-weight:600;cursor:pointer;transition:all .2s;text-align:center}
   .draft-btn.primary{background:var(--green);color:var(--purple);border-color:var(--green)}
   .draft-btn.danger{border-color:rgba(255,40,130,.3);color:var(--pink)}
@@ -226,7 +226,7 @@
     <div id="scoresContent"><div class="loading"><div class="spinner"></div>Loading fixtures…</div></div>
   </div>
 </div>
-  <div class="section" id="tab-draft">
+  <div class="section" id="tab-draft" style="padding-top:10px">
     <div id="draftContent"></div>
   </div>
 
@@ -646,13 +646,30 @@ function renderScores() {
   if (selectedTeams.size===0) { el.innerHTML='<p style="color:var(--muted);text-align:center;padding:20px;font-size:13px">Select teams above</p>'; return; }
   const tmap = Object.fromEntries(fplData.teams.map(t=>[t.id,t]));
   const sids = new Set(fplData.teams.filter(t=>selectedTeams.has(t.name)).map(t=>t.id));
+
+  // Determine the 5-GW window: current GW + up to 4 behind it
+  const currentGW = getNextGW();
+  const currentGWId = currentGW ? currentGW.id : null;
+  // Build set of allowed GW ids: current + 4 previous (handle early season where fewer exist)
+  const allowedGWs = new Set();
+  if (currentGWId) {
+    for (let i = 0; i < 5; i++) {
+      const gwId = currentGWId - i;
+      if (gwId >= 1) allowedGWs.add(gwId);
+    }
+  }
+
   const rel = fixtureData
-    .filter(f=>sids.has(f.team_h)||sids.has(f.team_a))
+    .filter(f => sids.has(f.team_h) || sids.has(f.team_a))
+    .filter(f => !currentGWId || allowedGWs.has(f.event)) // only fixtures in the window
     .sort((a,b)=>new Date(a.kickoff_time||0)-new Date(b.kickoff_time||0));
-  if (!rel.length) { el.innerHTML='<p style="color:var(--muted);text-align:center;padding:20px;font-size:13px">No fixtures found</p>'; return; }
+
+  if (!rel.length) { el.innerHTML='<p style="color:var(--muted);text-align:center;padding:20px;font-size:13px">No fixtures in this window for selected teams</p>'; return; }
+
   const byGW={}; rel.forEach(f=>{ const g=f.event||'TBC'; (byGW[g]||(byGW[g]=[])).push(f); });
   const now=new Date(); let h='';
-  for (const [gw,fs] of Object.entries(byGW).reverse().slice(0,30)) {
+  // Show most recent first
+  for (const [gw,fs] of Object.entries(byGW).reverse()) {
     h += `<div class="sec-title">Gameweek ${gw}</div>`;
     fs.forEach(f => {
       const hm=tmap[f.team_h]||{}, am=tmap[f.team_a]||{};
