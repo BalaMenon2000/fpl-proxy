@@ -193,6 +193,9 @@
   .modal-player-pts-l{font-size:9px;color:var(--muted);letter-spacing:1px}
   .modal-empty{text-align:center;padding:30px;color:var(--muted);font-size:13px}
   .already-picked{opacity:.35;pointer-events:none}
+  .formation-picker{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:14px}
+  .formation-btn{padding:6px 13px;border-radius:20px;border:1px solid var(--border);background:transparent;color:var(--muted);font-size:12px;font-weight:600;cursor:pointer;transition:all .2s;font-family:'DM Sans',sans-serif}
+  .formation-btn.on{background:var(--green);color:var(--purple);border-color:var(--green)}
 </style>
 </head>
 <body>
@@ -649,7 +652,7 @@ function renderScores() {
   if (!rel.length) { el.innerHTML='<p style="color:var(--muted);text-align:center;padding:20px;font-size:13px">No fixtures found</p>'; return; }
   const byGW={}; rel.forEach(f=>{ const g=f.event||'TBC'; (byGW[g]||(byGW[g]=[])).push(f); });
   const now=new Date(); let h='';
-  for (const [gw,fs] of Object.entries(byGW).slice(0,30)) {
+  for (const [gw,fs] of Object.entries(byGW).reverse().slice(0,30)) {
     h += `<div class="sec-title">Gameweek ${gw}</div>`;
     fs.forEach(f => {
       const hm=tmap[f.team_h]||{}, am=tmap[f.team_a]||{};
@@ -667,40 +670,61 @@ function renderScores() {
 
 
 // ── Draft ─────────────────────────────────────────────────────────────────────
-// Slot definitions: 15 slots total
-// starting: gk(1), def(4), mid(5), fwd(3) = 11
-// bench: bgk(1), b1(1), b2(1), b3(1) = 4
-const DRAFT_SLOTS = [
-  {id:'gk',  pos:1, label:'GK',  row:'gk',   bench:false},
-  {id:'def1',pos:2, label:'DEF', row:'def',   bench:false},
-  {id:'def2',pos:2, label:'DEF', row:'def',   bench:false},
-  {id:'def3',pos:2, label:'DEF', row:'def',   bench:false},
-  {id:'def4',pos:2, label:'DEF', row:'def',   bench:false},
-  {id:'mid1',pos:3, label:'MID', row:'mid',   bench:false},
-  {id:'mid2',pos:3, label:'MID', row:'mid',   bench:false},
-  {id:'mid3',pos:3, label:'MID', row:'mid',   bench:false},
-  {id:'mid4',pos:3, label:'MID', row:'mid',   bench:false},
-  {id:'mid5',pos:3, label:'MID', row:'mid',   bench:false},
-  {id:'fwd1',pos:4, label:'FWD', row:'fwd',   bench:false},
-  {id:'fwd2',pos:4, label:'FWD', row:'fwd',   bench:false},
-  {id:'fwd3',pos:4, label:'FWD', row:'fwd',   bench:false},
-  {id:'bgk', pos:1, label:'GK',  row:'bench', bench:true},
-  {id:'b1',  pos:0, label:'OUT', row:'bench', bench:true},
-  {id:'b2',  pos:0, label:'OUT', row:'bench', bench:true},
-  {id:'b3',  pos:0, label:'OUT', row:'bench', bench:true},
-];
-// pos:0 on bench means any outfield position accepted
+// Formations available (DEF-MID-FWD)
+const FORMATIONS = ['3-5-2','4-5-1','5-4-1','5-3-2','4-4-2','4-3-3','3-4-3','5-2-3'];
+let currentFormation = localStorage.getItem('fpl_formation') || '4-3-3';
 
+// Dynamically build slot list from a formation string e.g. "4-3-3"
+function buildSlots(formation) {
+  const [d,m,f] = formation.split('-').map(Number);
+  const slots = [{id:'gk', pos:1, label:'GK', row:'gk', bench:false}];
+  for (let i=1;i<=d;i++) slots.push({id:'def'+i, pos:2, label:'DEF', row:'def', bench:false});
+  for (let i=1;i<=m;i++) slots.push({id:'mid'+i, pos:3, label:'MID', row:'mid', bench:false});
+  for (let i=1;i<=f;i++) slots.push({id:'fwd'+i, pos:4, label:'FWD', row:'fwd', bench:false});
+  // 4 bench: 1 GK + 3 outfield
+  slots.push({id:'bgk', pos:1, label:'GK',  row:'bench', bench:true});
+  slots.push({id:'b1',  pos:0, label:'OUT', row:'bench', bench:true});
+  slots.push({id:'b2',  pos:0, label:'OUT', row:'bench', bench:true});
+  slots.push({id:'b3',  pos:0, label:'OUT', row:'bench', bench:true});
+  return slots; // always 15 total
+}
+
+function getDraftSlots() { return buildSlots(currentFormation); }
+
+// Change formation: re-map players that still fit, discard those that don't
+function setFormation(f) {
+  const newSlots = buildSlots(f);
+  const newTeam = {};
+  // Always keep GK and bench slots as-is
+  ['gk','bgk','b1','b2','b3'].forEach(id => { if (draftTeam[id]) newTeam[id] = draftTeam[id]; });
+  // Re-map outfield starters by position greedily
+  const posGroups = {2:[],3:[],4:[]};
+  getDraftSlots().filter(s=>!s.bench && s.pos!==1).forEach(s => {
+    if (draftTeam[s.id]) posGroups[s.pos].push(draftTeam[s.id]);
+  });
+  newSlots.filter(s=>!s.bench && s.pos!==1).forEach(s => {
+    if (posGroups[s.pos] && posGroups[s.pos].length) newTeam[s.id] = posGroups[s.pos].shift();
+  });
+  currentFormation = f;
+  draftTeam = newTeam;
+  localStorage.setItem('fpl_formation', f);
+  saveDraft();
+  renderDraft();
+}
+
+// pos:0 on bench = any outfield position accepted
 let draftTeam = {}; // slotId -> player object
-let pickerSlot = null; // which slot is being filled
+let pickerSlot = null;
 let pickerPosFilter = 'all';
 
 // Load saved draft from localStorage
 function loadDraft() {
   try {
+    const savedFmt = localStorage.getItem('fpl_formation');
+    if (savedFmt && FORMATIONS.includes(savedFmt)) currentFormation = savedFmt;
     const saved = localStorage.getItem('fpl_draft');
     if (saved && fplData) {
-      const ids = JSON.parse(saved); // {slotId: playerId}
+      const ids = JSON.parse(saved);
       draftTeam = {};
       for (const [slotId, playerId] of Object.entries(ids)) {
         const p = fplData.elements.find(e => e.id === playerId);
@@ -728,9 +752,11 @@ function clearDraft() {
 // ── Draft rendering ───────────────────────────────────────────────────────────
 function renderDraft() {
   if (!fplData) return;
+  const DRAFT_SLOTS = getDraftSlots();
   const tmap = Object.fromEntries(fplData.teams.map(t=>[t.id,t]));
   const posLabel = {1:'GK',2:'DEF',3:'MID',4:'FWD'};
-  const filledCount = Object.keys(draftTeam).length;
+  const validIds = new Set(DRAFT_SLOTS.map(s=>s.id));
+  const filledCount = Object.keys(draftTeam).filter(k=>validIds.has(k)).length;
   const budget = 1000; // £100.0m in tenths
   const spent = Object.values(draftTeam).reduce((s,p) => s + p.now_cost, 0);
   const remaining = budget - spent;
@@ -745,6 +771,11 @@ function renderDraft() {
     const p = draftTeam[s.id];
     return sum + (p ? predictPoints(p) : 0);
   }, 0);
+
+  // Formation picker
+  const formationPickerHTML = '<div class="formation-picker">' +
+    FORMATIONS.map(f=>'<button class="formation-btn ' + (f===currentFormation?'on':'') + '" onclick="setFormation(\'' + f + '\')">' + f + '</button>').join('') +
+    '</div>';
 
   // Build pitch rows
   const rows = {gk:[], def:[], mid:[], fwd:[], bench:[]};
@@ -789,6 +820,10 @@ function renderDraft() {
     </div>`;
 
   document.getElementById('draftContent').innerHTML = `
+    <div class="draft-actions">
+      <button class="draft-btn primary" onclick="autoFillDraft()">⚡ Auto-Fill</button>
+      <button class="draft-btn danger" onclick="clearDraft()">🗑 Clear</button>
+    </div>
     <div class="draft-summary">
       <div class="draft-stat">
         <div class="draft-stat-val">${filledCount}/15</div>
@@ -809,11 +844,8 @@ function renderDraft() {
       </div>
       <div class="budget-label"><span>£${spentStr}m spent</span><span>£100.0m budget</span></div>
     </div>
+    ${formationPickerHTML}
     ${pitchHTML}
-    <div class="draft-actions">
-      <button class="draft-btn primary" onclick="autoFillDraft()">⚡ Auto-Fill</button>
-      <button class="draft-btn danger" onclick="clearDraft()">🗑 Clear</button>
-    </div>
   `;
 }
 
@@ -825,7 +857,8 @@ function autoFillDraft() {
   const budget = 1000;
   const spent = Object.values(draftTeam).reduce((s,p)=>s+p.now_cost,0);
   let remaining = budget - spent;
-  const emptySlots = DRAFT_SLOTS.filter(s => !draftTeam[s.id]);
+  const DRAFT_SLOTS_AUTO = getDraftSlots();
+  const emptySlots = DRAFT_SLOTS_AUTO.filter(s => !draftTeam[s.id]);
   if (!emptySlots.length) { renderDraft(); return; }
 
   // Sort available players by predicted pts
@@ -835,7 +868,7 @@ function autoFillDraft() {
 
   // Fill each empty slot greedily
   for (const slot of emptySlots) {
-    const allowedPos = slot.pos === 0 ? [2,3,4] : [slot.pos]; // bench outfield = any
+    const allowedPos = slot.pos === 0 ? [2,3,4] : [slot.pos];
     const candidate = available.find(p =>
       allowedPos.includes(p.element_type) &&
       p.now_cost <= remaining &&
@@ -853,11 +886,22 @@ function autoFillDraft() {
 // ── Picker modal ──────────────────────────────────────────────────────────────
 function openPicker(slotId) {
   pickerSlot = slotId;
-  const slot = DRAFT_SLOTS.find(s => s.id === slotId);
+  const slot = getDraftSlots().find(s => s.id === slotId);
   const posLabel = {1:'Goalkeeper',2:'Defender',3:'Midfielder',4:'Forward',0:'Outfield Player'};
   document.getElementById('pickerTitle').textContent = draftTeam[slotId]
     ? 'Replace ' + (posLabel[slot.pos]||'Player')
     : 'Pick ' + (posLabel[slot.pos]||'Player');
+  // Show/hide remove button
+  let removeBtn = document.getElementById('pickerRemoveBtn');
+  if (!removeBtn) {
+    removeBtn = document.createElement('button');
+    removeBtn.id = 'pickerRemoveBtn';
+    removeBtn.style.cssText = 'display:none;margin:0 20px 8px;width:calc(100% - 40px);padding:9px 16px;background:rgba(255,40,130,.1);border:1px solid rgba(255,40,130,.3);border-radius:10px;color:var(--pink);font-size:13px;font-weight:600;cursor:pointer;font-family:DM Sans,sans-serif;';
+    removeBtn.textContent = '🗑 Remove Player from Squad';
+    document.querySelector('.modal-search').before(removeBtn);
+  }
+  removeBtn.style.display = draftTeam[slotId] ? 'block' : 'none';
+  removeBtn.onclick = () => removePlayer(slotId);
   document.getElementById('pickerSearch').value = '';
   pickerPosFilter = slot.pos === 0 ? 'all' : String(slot.pos);
   renderPickerPosFilter(slot.pos);
@@ -895,7 +939,7 @@ function setPickerPos(pos) {
 
 function filterPickerList() {
   if (!fplData || !pickerSlot) return;
-  const slot = DRAFT_SLOTS.find(s => s.id === pickerSlot);
+  const slot = getDraftSlots().find(s => s.id === pickerSlot);
   const query = document.getElementById('pickerSearch').value.toLowerCase();
   const tmap = Object.fromEntries(fplData.teams.map(t=>[t.id,t]));
   const pickedIds = new Set(Object.values(draftTeam).map(p=>p.id));
@@ -947,6 +991,13 @@ function filterPickerList() {
       </div>
     </div>`;
   }).join('');
+}
+
+function removePlayer(slotId) {
+  delete draftTeam[slotId];
+  saveDraft();
+  closePicker();
+  renderDraft();
 }
 
 function pickPlayer(playerId) {
