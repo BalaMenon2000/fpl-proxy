@@ -215,9 +215,23 @@ function switchTab(t) {
 
 // ── Fetch ─────────────────────────────────────────────────────────────────────
 async function apiFetch(path) {
-  const r = await fetch(`/api/fpl?path=${encodeURIComponent(path)}`, { signal: AbortSignal.timeout(15000) });
-  if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.error || `HTTP ${r.status}`); }
-  return r.json();
+  const url = `/api/fpl?path=${encodeURIComponent(path)}`;
+  let r;
+  try {
+    r = await fetch(url, { signal: AbortSignal.timeout(15000) });
+  } catch(e) {
+    throw new Error(`Network error on ${path}: ${e.message}`);
+  }
+  if (!r.ok) {
+    let detail = '';
+    try { detail = (await r.json()).error || ''; } catch {}
+    throw new Error(`${path} → HTTP ${r.status} ${detail}`);
+  }
+  try {
+    return await r.json();
+  } catch(e) {
+    throw new Error(`Bad JSON from ${path}: ${e.message}`);
+  }
 }
 
 // ── Utils ─────────────────────────────────────────────────────────────────────
@@ -232,25 +246,43 @@ function pName(id) { return fplData?.elements?.find(e=>e.id===id)?.web_name || '
 
 // ── Load ──────────────────────────────────────────────────────────────────────
 async function loadAll() {
-  document.getElementById('deadlineContent').innerHTML = spin();
-  document.getElementById('playersContent').innerHTML = spin();
-  document.getElementById('scoresContent').innerHTML = spin();
+  const setAll = html => {
+    document.getElementById('deadlineContent').innerHTML = html;
+    document.getElementById('playersContent').innerHTML = html;
+    document.getElementById('scoresContent').innerHTML = html;
+  };
+  setAll(spin());
+
   try {
-    // Fetch both in parallel for speed
-    [fplData, fixtureData] = await Promise.all([
-      apiFetch('bootstrap-static/'),
-      apiFetch('fixtures/')
-    ]);
+    setAll(`<div class="loading"><div class="spinner"></div>Fetching bootstrap data…</div>`);
+    fplData = await apiFetch('bootstrap-static/');
+
+    setAll(`<div class="loading"><div class="spinner"></div>Fetching fixtures…</div>`);
+    fixtureData = await apiFetch('fixtures/');
+
     document.getElementById('gwBadge').textContent = 'GW ' + (getNextGW()?.id || '—');
-    renderDeadline();
-    renderPlayers(playerMode, playerPos);
-    renderTeamSelector();
-    renderScores();
+
+    try { renderDeadline(); }
+    catch(e) { document.getElementById('deadlineContent').innerHTML = errBox('renderDeadline failed: ' + e.message, 'loadAll()'); }
+
+    try { renderPlayers(playerMode, playerPos); }
+    catch(e) { document.getElementById('playersContent').innerHTML = errBox('renderPlayers failed: ' + e.message, 'loadAll()'); }
+
+    try { renderTeamSelector(); renderScores(); }
+    catch(e) { document.getElementById('scoresContent').innerHTML = errBox('renderScores failed: ' + e.message, 'renderScores()'); }
+
   } catch(e) {
-    const msg = errBox('⚠️ ' + e.message, 'loadAll()');
-    document.getElementById('deadlineContent').innerHTML = msg;
-    document.getElementById('playersContent').innerHTML = msg;
-    document.getElementById('scoresContent').innerHTML = msg;
+    const debugInfo = `
+      <div class="err-box">
+        <p>⚠️ ${e.message}</p>
+        <p style="font-size:11px;color:var(--muted);margin-top:8px;word-break:break-all">
+          URL: ${window.location.href}<br>
+          Time: ${new Date().toLocaleTimeString()}<br>
+          Online: ${navigator.onLine}
+        </p>
+        <button class="retry-btn" style="margin-top:12px" onclick="loadAll()">↻ Retry</button>
+      </div>`;
+    setAll(debugInfo);
   }
 }
 
