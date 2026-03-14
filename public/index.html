@@ -335,46 +335,53 @@ function getFixtureChips(teamId) {
 // Core prediction algorithm
 function predictPoints(p) {
   if (!p || p.minutes === 0) return 0;
-  const pos = p.element_type; // 1=GK 2=DEF 3=MID 4=FWD
+  const pos = p.element_type;
 
-  // Form — FPL rolling 5-game average, highest single weight
-  const formScore = parseFloat(p.form) * 2.2;
+  // Form: still the dominant signal, but capped contribution
+  const form = Math.min(parseFloat(p.form), 10); // cap at 10 to prevent outliers
+  const formScore = form * 1.4;
 
-  // ICT index — composite of influence, creativity, threat
-  const ictScore = parseFloat(p.ict_index) * 0.07;
+  // ICT: normalise against the season max so one player can't dominate
+  const maxICT = Math.max(...fplData.elements.map(e => parseFloat(e.ict_index)));
+  const ictNorm = parseFloat(p.ict_index) / maxICT; // 0.0 → 1.0
+  const ictScore = ictNorm * 2.5;
 
-  // Fixture difficulty (1=easy → 5=hard, inverted)
+  // Fixture difficulty
   const diff = getAvgDifficulty(p.team);
-  const fixtureScore = diff !== null ? (6 - diff) * 1.1 : 2.5;
+  const fixtureScore = diff !== null ? (6 - diff) * 0.7 : 1.5;
 
-  // Double gameweek — two sets of points possible
+  // DGW: scale with form so only good players get the full bonus
   const fixtures = getTeamNextFixtures(p.team);
-  const dgwBonus = fixtures.length >= 2 ? 3.5 : 0;
+  const dgwBonus = fixtures.length >= 2 ? Math.min(form / 10 * 3.0, 3.0) : 0;
 
-  // Minutes reliability — reward consistent starters
-  const gamesFinished = fplData?.events?.filter(e=>e.finished).length || 1;
+  // Minutes reliability
+  const gamesFinished = fplData?.events?.filter(e => e.finished).length || 1;
   const avgMins = p.minutes / gamesFinished;
-  const minsBonus = avgMins >= 80 ? 1.5 : avgMins >= 60 ? 0.8 : avgMins >= 30 ? 0.1 : -0.8;
+  const minsBonus = avgMins >= 80 ? 1.0 : avgMins >= 60 ? 0.4 : avgMins >= 30 ? 0 : -1.0;
 
-  // Position base (GK/DEF get clean sheet upside)
-  const posBase = pos===1 ? 2.8 : pos===2 ? 2.2 : pos===3 ? 1.5 : 1.2;
+  // Position base (tightened)
+  const posBase = pos===1 ? 1.8 : pos===2 ? 1.5 : pos===3 ? 1.2 : 1.0;
 
-  // Goal threat (attackers benefit most)
-  const goalBonus = (parseFloat(p.threat) / 100) * (pos===4 ? 1.2 : pos===3 ? 0.6 : 0.15);
+  // Goal threat — normalised, not raw
+  const maxThreat = Math.max(...fplData.elements.map(e => parseFloat(e.threat)));
+  const threatNorm = parseFloat(p.threat) / maxThreat;
+  const goalBonus = threatNorm * (pos===4 ? 1.5 : pos===3 ? 0.8 : 0.2);
 
-  // Assist potential
-  const assistBonus = (parseFloat(p.creativity) / 100) * 0.45;
+  // Assist potential — normalised
+  const maxCreat = Math.max(...fplData.elements.map(e => parseFloat(e.creativity)));
+  const creatNorm = parseFloat(p.creativity) / maxCreat;
+  const assistBonus = creatNorm * 0.8;
 
-  // Injury / availability penalty
+  // Availability
   const avail = p.chance_of_playing_next_round;
   const availPenalty = avail===0 ? -99 : avail===25 ? -4 : avail===50 ? -2 : avail===75 ? -0.8 : 0;
 
   const raw = posBase + formScore + ictScore + fixtureScore + dgwBonus + minsBonus + goalBonus + assistBonus + availPenalty;
 
-  // Scale to realistic FPL range (0–18 pts)
-  return Math.max(0, Math.min(18, raw * 0.68));
+  // Realistic ceiling: 13 for a single GW, 16 for a DGW
+  const ceiling = fixtures.length >= 2 ? 16 : 13;
+  return Math.max(0, Math.min(ceiling, raw));
 }
-
 // Confidence in the prediction (0–100) based on data quality
 function predConfidence(p) {
   let score = 50;
