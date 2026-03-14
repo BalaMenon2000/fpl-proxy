@@ -334,53 +334,70 @@ function getFixtureChips(teamId) {
 
 // Core prediction algorithm
 function predictPoints(p) {
+function predictPoints(p) {
   if (!p || p.minutes === 0) return 0;
-  const pos = p.element_type;
-
-  // Form: still the dominant signal, but capped contribution
-  const form = Math.min(parseFloat(p.form), 10); // cap at 10 to prevent outliers
-  const formScore = form * 1.4;
-
-  // ICT: normalise against the season max so one player can't dominate
-  const maxICT = Math.max(...fplData.elements.map(e => parseFloat(e.ict_index)));
-  const ictNorm = parseFloat(p.ict_index) / maxICT; // 0.0 → 1.0
-  const ictScore = ictNorm * 2.5;
-
-  // Fixture difficulty
-  const diff = getAvgDifficulty(p.team);
-  const fixtureScore = diff !== null ? (6 - diff) * 0.7 : 1.5;
-
-  // DGW: scale with form so only good players get the full bonus
+  const pos = p.element_type; // 1=GK 2=DEF 3=MID 4=FWD
   const fixtures = getTeamNextFixtures(p.team);
-  const dgwBonus = fixtures.length >= 2 ? Math.min(form / 10 * 3.0, 3.0) : 0;
+  const isDGW = fixtures.length >= 2;
 
-  // Minutes reliability
-  const gamesFinished = fplData?.events?.filter(e => e.finished).length || 1;
-  const avgMins = p.minutes / gamesFinished;
-  const minsBonus = avgMins >= 80 ? 1.0 : avgMins >= 60 ? 0.4 : avgMins >= 30 ? 0 : -1.0;
-
-  // Position base (tightened)
-  const posBase = pos===1 ? 1.8 : pos===2 ? 1.5 : pos===3 ? 1.2 : 1.0;
-
-  // Goal threat — normalised, not raw
-  const maxThreat = Math.max(...fplData.elements.map(e => parseFloat(e.threat)));
-  const threatNorm = parseFloat(p.threat) / maxThreat;
-  const goalBonus = threatNorm * (pos===4 ? 1.5 : pos===3 ? 0.8 : 0.2);
-
-  // Assist potential — normalised
-  const maxCreat = Math.max(...fplData.elements.map(e => parseFloat(e.creativity)));
-  const creatNorm = parseFloat(p.creativity) / maxCreat;
-  const assistBonus = creatNorm * 0.8;
-
-  // Availability
+  // ── Availability: knock out injured players immediately ──
   const avail = p.chance_of_playing_next_round;
-  const availPenalty = avail===0 ? -99 : avail===25 ? -4 : avail===50 ? -2 : avail===75 ? -0.8 : 0;
+  if (avail === 0) return 0;
+  const availMult = avail === 25 ? 0.25 : avail === 50 ? 0.5 : avail === 75 ? 0.75 : 1.0;
 
-  const raw = posBase + formScore + ictScore + fixtureScore + dgwBonus + minsBonus + goalBonus + assistBonus + availPenalty;
+  // ── Minutes multiplier: if they don't play, nothing else matters ──
+  const gamesFinished = Math.max(fplData.events.filter(e => e.finished).length, 1);
+  const avgMins = p.minutes / gamesFinished;
+  const minsMult = avgMins >= 75 ? 1.0 : avgMins >= 55 ? 0.75 : avgMins >= 30 ? 0.45 : 0.2;
 
-  // Realistic ceiling: 13 for a single GW, 16 for a DGW
-  const ceiling = fixtures.length >= 2 ? 16 : 13;
-  return Math.max(0, Math.min(ceiling, raw));
+  // ── Position-specific base expected points ──
+  // Reflects realistic average before bonuses
+  const posBase = pos===1 ? 3.5 : pos===2 ? 3.8 : pos===3 ? 4.5 : pos===4 ? 4.2;
+
+  // ── Form bonus: capped and position-aware ──
+  // GKs rarely exceed form 6, attackers can hit 10+
+  const form = parseFloat(p.form);
+  const formCap = pos===1 ? 6 : pos===2 ? 7 : 10;
+  const formNorm = Math.min(form, formCap) / formCap; // 0.0 → 1.0
+  const formBonus = formNorm * (pos===1 ? 1.5 : pos===2 ? 2.0 : pos===3 ? 3.0 : 2.5);
+
+  // ── Fixture difficulty: affects clean sheets and attacking returns ──
+  const diff = getAvgDifficulty(p.team);
+  const diffNorm = diff !== null ? (5 - diff) / 4 : 0.5; // 0.0 (hardest) → 1.0 (easiest)
+  // GKs/DEFs care more about fixture (clean sheet chance)
+  // FWDs/MIDs care somewhat but can score against anyone
+  const fixturWeight = pos===1 ? 2.5 : pos===2 ? 2.0 : pos===3 ? 1.2 : 1.0;
+  const fixtureBonus = diffNorm * fixturWeight;
+
+  // ── Attacking threat: only meaningful for MID/FWD ──
+  let attackBonus = 0;
+  if (pos === 3 || pos === 4) {
+    const maxThreat = Math.max(...fplData.elements.filter(e=>e.element_type===pos).map(e=>parseFloat(e.threat)));
+    const threatNorm = maxThreat > 0 ? parseFloat(p.threat) / maxThreat : 0;
+    const maxCreat = Math.max(...fplData.elements.filter(e=>e.element_type===pos).map(e=>parseFloat(e.creativity)));
+    const creatNorm = maxCreat > 0 ? parseFloat(p.creativity) / maxCreat : 0;
+    // FWDs get more from threat, MIDs get more from creativity
+    attackBonus = pos===4
+      ? (threatNorm * 1.5) + (creatNorm * 0.5)
+      : (threatNorm * 0.8) + (creatNorm * 1.2);
+  }
+
+  // ── DGW bonus: scales with how likely they are to play and score ──
+  const dgwBonus = isDGW ? (formNorm * 2.0 + diffNorm * 1.0) : 0;
+
+  // ── Sum up ──
+  const raw = posBase + formBonus + fixtureBonus + attackBonus + dgwBonus;
+
+  // Apply minutes and availability as multipliers, not additions
+  // This way a 50% fit player can't score 13 pts
+  const adjusted = raw * minsMult * availMult;
+
+  // ── Position-specific realistic ceilings ──
+  const ceiling = isDGW
+    ? (pos===1 ? 10 : pos===2 ? 12 : pos===3 ? 15 : 14)
+    : (pos===1 ? 8  : pos===2 ? 9  : pos===3 ? 12 : 11);
+
+  return Math.max(0, Math.min(ceiling, adjusted));
 }
 // Confidence in the prediction (0–100) based on data quality
 function predConfidence(p) {
